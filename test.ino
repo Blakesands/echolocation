@@ -16,28 +16,28 @@
 // remember the current state; initialise with ST_IDLE
 static byte currentState = ST_IDLE;
 
-volatile long int signals[4] = {0};  //declares an array with 4 positions and sets them all to zero // 4 values is signal and 1 echo for testing principle
+volatile long int signals[5] = {0};  //declares an array with 4 positions and sets them all to zero // 4 values is signal and 1 echo for testing principle
 volatile int signalindex = 0;  //index to the array
 volatile long int lastsignals[4]; // 
 // volatile unsigned long int micros() = micros(); /// possible?? needs long??? need to deal with overflow??
 bool havevalues = false;
-bool clickcall = false;
+//bool clickcall = false;
 
 void comparatortrigger1 ()     
     { 
     signals[signalindex] = micros();  /// "micros() works initially but will start behaving erratically after 1-2 ms".?????
-    signalindex = 3;  //increment the array index to the next position
+    signalindex++;  //increment the array index to the next position
     }   // end of ISR
 
 void comparatortrigger2 ()     
     { 
-    signals[signalindex] = micros(); 
-    signalindex = 4;  //increment the array index to the next position
+    signals[signalindex] = micros();
+    signalindex++;  //increment the array index to the next position 
     }  // end of ISR
 
 void clickcallisr ()
     {
-    clickcall = true;
+//    clickcall = true;
     detachInterrupt (digitalPinToInterrupt (3));
     currentState = ST_PULSEON;  // next state    
     }
@@ -47,26 +47,19 @@ bool wait(unsigned long duration)
     static unsigned long startTime;
     static bool isStarted = false;
 
-    // if wait period not started yet
     if (isStarted == false)
     {
-      // set the start time of the wait period
       startTime = micros();
-      // indicate that it's started
       isStarted = true;
-      // indicate to caller that wait period is in progress
       return false;
     }
 
-          // check if wait period has lapsed
     if (micros() - startTime >= duration)
     {
-                                  // lapsed, indicate no longer started so next time we call the function it will initialise the start time again
       isStarted = false;
-                               // indicate to caller that wait period has lapsed
       return true;
     }
-                             // indicate to caller that wait period is in progress
+    
       return false;
   }   
 
@@ -106,16 +99,16 @@ void loop()
         
       case ST_CALL:
         attachInterrupt (digitalPinToInterrupt (3), clickcallisr, RISING); // button to start scan moves to next state in isr
-        while (clickcall = false) 
-        {
-          //do nothing
-        }
+//        while (clickcall = false) 
+//        {
+//          //do nothing
+//        }
         break;
         
       case ST_PULSEON: // switch the PULSE on
         gen.EnableOutput(true); 
         signals[signalindex] = micros(); 
-        signalindex = 1;
+        signalindex++;
         currentState = ST_WAITON;  // next state
         break;
   
@@ -131,8 +124,8 @@ void loop()
       case ST_PULSEOFF:
         // switch the PULSE off
         gen.EnableOutput(false); 
-        signals[signalindex] = micros(); 
-        signalindex = 2; 
+        signals[signalindex] = micros(); // mark end of signal pulse
+        signalindex++; 
         currentState = ST_COUNT1; // next state
         break;
   
@@ -152,25 +145,21 @@ void loop()
         if (signalindex == 4)
             {
             detachInterrupt (digitalPinToInterrupt (2));
+            havevalues = true;
+            currentState = ST_COUNT2;  // next state 
             }
-  
-        for( int i = 0 ; i < 4 ; ++i )
-            {
-            lastsignals[ i ] = signals[ i ]; //flag values - copy to global
-            }
-            
-        havevalues = true;
-        currentState = ST_COUNT2;  // next state    
         break;
 
       case ST_COUNT2:
-        // reset array index count
-        signals[signalindex] = 0;
+        signalindex = 0; // reset array index count
         currentState = ST_REPORT;
         break;
   
       case ST_REPORT:
-        
+        for( int i = 0 ; i < 4 ; ++i )
+            {
+            lastsignals[ i ] = signals[ i ]; //flag values - copy to global
+            }
         currentState = ST_IDLE;
         break;
     
