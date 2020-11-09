@@ -5,11 +5,11 @@
 
 // states for state machine switcher
 #define ST_IDLE 0    // Print last signal values to serial 
-#define ST_CALL 8  // Waiting for command to scan (frequency, length of signal, Range time out, signal time out, comparator threshold .02v)/
+#define ST_CALL 8  // Waiting for interrupt command to scan (frequency, length of signal, Range time out, signal time out, comparator threshold .02v)/
 #define ST_PULSEON 1    // The PULSE will be switched on
 #define ST_WAITON 2   // Wait till the PULSE has been on for a given duration
 #define ST_PULSEOFF 3   // The PULSE will be switched off
-#define ST_COUNT1 4 // Waiting for hardware triggered ISR
+#define ST_COUNT1 4 // digital read and loop til array is full
 #define ST_COUNT2 5 // Resetting array index
 #define ST_REPORT 6  // Reading results 
 #define ST_ACT 7  // Setting leds
