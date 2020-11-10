@@ -1,9 +1,145 @@
-#include <AD9833.h>   
+/* 
+
+Version 0.1 to test distance measurement accuracy - next step is to add more mics and perform triangulation
+Controls an AD9833 waveform generator to emit short pulses (Bill William's Library)
+Uses a MCP4132 digital pot to set a reference voltage to a LM211 comparator peak detection circuit (direct over SPi)
+Comparator Circuit flips logic state when the threshold voltage set is exceeded by the input voltage from the microphone.
+Reads a digital pin really fast to time a reflected sound wave and calculate range, uses range value to light leds
+
+*/
+
+#include <AD9833.h>  
+
 #include <SPI.h>
+
+#include <Adafruit_NeoPixel.h>
+#define PIN            6
+#define NUMPIXELS      15
+
+Adafruit_NeoPixel pixels = Adafruit_NeoPixel(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
 
 // Function Generator
 #define FNC_PIN 4     
 AD9833 gen(FNC_PIN); 
+
+// testing variables grouped in one place
+uint8_t speaker_test_threshold = 75; //  0 - 128
+uint8_t sensitivity = 0; // steps of around 30mV
+uint8_t scan_length = 30; // us
+uint16_t frequency = 10000;
+uint8_t scan_range = 40; // reflection timeout in ms
+uint8_t wave_index = 0; // 0 = sine wave 1 = triangle
+uint16_t distance_factor = 1; // depends on how fast it can fill range bin array **** TO BE FOUND
+
+/// Potentiometer variables
+static uint8_t address = 0x00;
+static uint8_t CS= 10;
+volatile uint8_t mic_test_threshold = 0;
+uint8_t scan_threshold = 0; 
+
+/// Potentiometer SPi comms
+int digitalPotWrite(uint8_t value)
+    {
+        digitalWrite(CS, LOW);
+        SPI.transfer(address);
+        SPI.transfer(value);
+        digitalWrite(CS, HIGH);
+    }
+
+// scan variables
+static uint8_t wave_type[2] = {SINE_WAVE, TRIANGLE_WAVE};
+volatile uint16_t range = 0; /// output of scan
+
+// Arrays and logging
+volatile bool range_bin[1499];
+volatile uint16_t bin_index = 0;
+uint16_t check_values = 0; // validation counter
+bool have_values = false;
+bool click_called = false; /// pin3 isr flags click_called and detatches interrupt
+
+// Self test
+bool speaker_test = false;
+bool mic_test = false;
+
+//// timing function
+bool wait(unsigned long duration)
+{
+  static unsigned long startTime;
+  static bool isStarted = false;
+  if (isStarted == false) 
+  {
+    startTime = micros();
+    isStarted = true;
+    return false;
+  }
+  if (micros() - startTime >= duration) 
+  {
+    isStarted = false;
+    return true;
+  }
+  return false; 
+}  
+
+
+void setup() 
+{
+   
+    gen.Begin();  // Set AD9833
+    gen.ApplySignal(SINE_WAVE,REG0,10000);
+
+    pixels.begin(); 
+
+    Serial.begin(115200); // debugging
+    SPI.begin(); // potentiometer
+    pinMode (CS, OUTPUT); // potentiometer
+    pinMode(7, INPUT); // comparator pin
+    pinMode(3, INPUT); // interrupt pin // triggers scan for testing
+    pinMode(6, OUTPUT); // neopixels
+    
+}
+
+void loop() /***********************************************************************************************************/
+{
+    
+    self_test;
+
+    Serial.println("Self Test: Done "); // debugging
+    Serial.print("Speaker Test: "); // debugging
+    Serial.println(speaker_test); // debugging
+    Serial.print("Mic Test: "); // debugging
+    Serial.println(mic_test); // debugging
+    Serial.print("Scan Threshold: "); // debugging
+    Serial.println(scan_threshold); // debugging
+    Serial.print("inc Sensitivity: "); // debugging
+    Serial.println(sensitivity); // debugging
+
+    if (mic_test == false || speaker_test == false)
+    {
+        syserror;
+        Serial.println("self test failed"); // debugging
+        for( ; ; ) {} // infinite loop
+    }
+
+    click_ready; // plays a wibble noise
+            
+    attachInterrupt (digitalPinToInterrupt (3), clickcallisr, RISING); // interrupt for testing // isr detaches interrupt and flags click_called
+
+    while (click_called == false) // loop til reset
+    {
+        if (click_called == true)
+        {
+            scan;
+            if (validate_readings == true)
+            {
+                report;
+                act;
+                click_ready;
+            }
+            attachInterrupt (digitalPinToInterrupt (3), clickcallisr, RISING);
+            click_called = false; 
+        }
+    }
+} /// END OF LOOP /********************************************************************************************************************************/
 
 bool self_test () // checks the mics can hear the speaker, then raises the logic flip threshold until the comparators go off
 {
@@ -23,46 +159,60 @@ bool self_test () // checks the mics can hear the speaker, then raises the logic
         gen.EnableOutput(false);
         speaker_test = false;
     }
-    digitalPotWrite(mic_test_threshold); /// starts off at 0V so all comparators should be high due to environmental noise     
+    digitalPotWrite(mic_test_threshold); /// Speaker is OFF. Threshold starts off at 23mV, all comparators high    
     delay(200);
-    for (mic_test_threshold = 0, mic_test_threshold < 128, mic_test_threshold++)
+    for (mic_test_threshold = 0; mic_test_threshold < 128; mic_test_threshold++)
     {
-        if (comparator_test == false) 
+        if (comparator_test == false)
         {   
             scan_threshold = mic_test_threshold + sensitivity;
             mic_test = true; // all comparators should be high or mics arent working
-            Serial.println("Self Test: Done "); // debugging
-            Serial.print("Speaker Test: "); // debugging
-            Serial.print(speaker_test); // debugging
-            Serial.println("Mic Test: "); // debugging
-            Serial.print(mic_test); // debugging
-            return true;
+            return (true);
         }
        digitalPotWrite(mic_test_threshold); 
       
     }
     mic_test = false; 
-    Serial.println("Self Test: Done "); // debugging
-    Serial.print("Speaker Test: "); // debugging
-    Serial.print(speaker_test); // debugging
-    Serial.println("Mic Test: "); // debugging
-    Serial.print(mic_test); // debugging
-    return true;
-}  
+    return (true);
+}
+
+void click_ready () // plays a tone to show system ok
+{
+    gen.ApplySignal(SINE_WAVE,REG0,220);
+    gen.EnableOutput(true); 
+    while (wait(440000) == false)
+    {
+        for (int i = 220; i <= 440; i + 10)
+            {
+            gen.ApplySignal(TRIANGLE_WAVE,REG0,i);
+            delay(10);
+            }
+        for (int i = 440; i >= 220; i - 10)
+            {
+            gen.ApplySignal(TRIANGLE_WAVE,REG0,i);
+            delay(10);
+            }
+    }
+    gen.EnableOutput(false);// turn off the ad9833 gen
+}
+
+void clickcallisr () // click button on interrupt pin 3 to start a scan
+{
+    detachInterrupt (digitalPinToInterrupt (3));
+    click_called = true;
+}
 
 
 void scan ()
 {
-    wave_index = 0; // 0 sine wave 1 triangle wave
-    frequency = 10000;
-    scan_length = 30;
     digitalPotWrite(scan_threshold); // set comparator threshold
     gen.ApplySignal(wave_type[wave_index],REG0,frequency); // set ad9833 frequency and wave type
     gen.EnableOutput(true); 
-    if (wait(scan_length) == true) // Pulse duration in micros init to 30
-        {
-            gen.EnableOutput(false); 
+    while (wait(scan_length) == false) // Pulse duration in micros init to 30 // 
+        {    
+
         }
+    gen.EnableOutput(false);     
     while (bin_index < 1500) // fill range bin array
       { 
         if(digitalRead(7) == HIGH) 
@@ -72,98 +222,75 @@ void scan ()
         else
         {
             range_bin[bin_index] = false;
+            check_values++; // increment validation counter
         }
         bin_index++;  
       }
-    bin_index = 0; // reset array index count
-    have_values = true; //flag values
-    for( int i = 0 ; i < 1500 ; ++i ) 
-        {
-        range_bin[ i ] = last_range_bin[ i ]; 
-        }
+    bin_index = 0; // reset array index count    
+    // have_values = true; //flag values
 }
 
+/// validate readings if all are false, no reflection received, if all are true, mic is overloaded // *****add more rules
+bool validate_readings ()
+{
+    if (check_values == 1500 || check_values == 0)
+        {
+            return false;
+        }
+    return true;
+}
 
 /// add more comparator pins here // add other pins //&& digitalRead(3) == HIGH// 
 bool comparator_test () 
 {
   if (digitalRead(7) == HIGH ) 
   { 
-    return true;
+    return (true);
   }
-   return false;
+   return (false);
 }
 
-/// Potentiometer code
-int digitalPotWrite(int value)
-  {
-    digitalWrite(CS, LOW);
-    SPI.transfer(address);
-    SPI.transfer(value);
-    digitalWrite(CS, HIGH);
-  }
-
+void report () // Go through the bin index to find the first true value
+{
+    for (bin_index = 0; bin_index < 1500; bin_index++)
+    {
+        if (range_bin[bin_index] == true)
+        {
+            range = bin_index;
+            Serial.println("Range Detected: "); // debugging
+            Serial.println(range * distance_factor); // debugging
+        }
+    }
+    Serial.println("Nothing Detected!"); // debugging
 }
 
-bool wait(unsigned long duration) //// Waiting function
+void act ()
 {
-  static unsigned long startTime;
-  static bool isStarted = false;
-  if (isStarted == false) 
-  {
-    startTime = micros();
-    isStarted = true;
-    return false;
-  }
-  if (micros() - startTime >= duration) 
-  {
-    isStarted = false;
-    return true;
-  }
-  return false; 
-}  
-
-/// Potentiometer variables
-uint8_t address = 0x00;
-uint8_t CS= 10;
-uint8_t speaker_test_threshold = 75; //  0 - 128
-uint8_t mic_test_threshold = 0;
-uint8_t scan_threshold = 0; 
-uint8_t sensitivity = 0; // steps of around 30mV
-
-// scan variables
-uint8_t scan_length = 30; // us
-uint16_t frequency = 10000;
-uint8_t scan_range = 40; // reflection timeout in ms
-uint8_t scan_errorcheck = 3; // timeout for receiving signal pulse in ms
-static uint8_t wave_type[2] = {SINE_WAVE, TRIANGLE_WAVE};
-uint8_t wave_index = 0;
-
-// Arrays and logging
-volatile bool range_bin[1499];
-volatile bool last_range_bin[1499];
-volatile uint16_t bin_index = 0;
-
-bool have_values = false;
-bool click_called = false;
-bool self_test = false;
-bool speaker_test = false;
-bool mic_test = false;
-
-
-void setup() 
-{
-  gen.Begin();  // Set AD9833
-  gen.ApplySignal(SINE_WAVE,REG0,10000);
-  Serial.begin(115200); // debugging
-  SPI.begin(); // potentiometer
-  pinMode (CS, OUTPUT); // potentiometer
-  pinMode(7, INPUT); // comparator pin
-  pinMode(3, INPUT); // interrupt pin // triggers scan for testing
+    uint8_t i = map(range, 0, 1499, 1, 15);
+    pixels.setPixelColor(i, pixels.Color(150,20,20));
+    pixels.show();
 }
 
-void loop()
+void syserror ()
 {
-
-
+    while (wait(10000000) == false)
+    {
+        gen.ApplySignal(TRIANGLE_WAVE,REG0,220);
+        gen.EnableOutput(true); 
+        for (int i = 215; i <= 445; i++)
+        {
+            gen.ApplySignal(TRIANGLE_WAVE,REG0,i);
+            delay(100000/230);
+        }
+        delay(500); // millis
+        for (int i = 445; i >= 215; i--)
+        {
+            gen.ApplySignal(TRIANGLE_WAVE,REG0,i);
+            delay(100000/230);
+        }
+        if (wait(10000000) == true) // micros
+        {
+            gen.EnableOutput(false);// turn off the ad9833 gen
+        }
+    }
 }
