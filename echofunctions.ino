@@ -2,7 +2,7 @@
 
 Version 0.1 to test distance measurement accuracy - next step is to add more mics and perform triangulation
 Controls an AD9833 waveform generator to emit short pulses (Bill William's Library)
-Uses a MCP4132 digital pot to set a reference voltage to a LM211 comparator peak detection circuit (direct over SPi)
+Uses a MCP4132 digital pot to set a reference voltage to a LM211 comparator peak detection circuit (over SPi)
 Comparator Circuit flips logic state when the threshold voltage set is exceeded by the input voltage from the microphone.
 Reads a digital pin really fast to time a reflected sound wave and calculate range, uses range value to light leds
 
@@ -49,10 +49,13 @@ int digitalPotWrite(uint8_t value)
 // scan variables
 static uint8_t wave_type[2] = {SINE_WAVE, TRIANGLE_WAVE};
 volatile uint16_t range = 0; /// output of scan
-
+volatile uint16_t echo_start = 0;
+volatile uint16_t echo_length = 0;
 // Arrays and logging
+
 volatile bool range_bin[1499];
 volatile uint16_t bin_index = 0;
+
 uint16_t check_values = 0; // validation counter
 bool have_values = false;
 bool click_called = false; /// pin3 isr flags click_called and detatches interrupt
@@ -91,6 +94,7 @@ void setup()
 
     Serial.begin(115200); // debugging
     SPI.begin(); // potentiometer
+    
     pinMode (CS, OUTPUT); // potentiometer
     pinMode(7, INPUT); // comparator pin
     pinMode(3, INPUT); // interrupt pin // triggers scan for testing
@@ -115,26 +119,29 @@ void loop() /*******************************************************************
 
     if (mic_test == false || speaker_test == false)
     {
-        syserror;
+        syserror; // a nasty wibble noise
         Serial.println("self test failed"); // debugging
         for( ; ; ) {} // infinite loop
     }
 
-    click_ready; // plays a wibble noise
+    click_ready; // plays a nice wibble noise
             
     attachInterrupt (digitalPinToInterrupt (3), clickcallisr, RISING); // interrupt for testing // isr detaches interrupt and flags click_called
 
-    while (click_called == false) // loop til reset
+    do while (click_called == false) // loop til reset
     {
         if (click_called == true)
         {
             scan;
+            validate_readings;
             if (validate_readings == true)
             {
+                validate_readings = false;
                 report;
                 act;
                 click_ready;
             }
+
             attachInterrupt (digitalPinToInterrupt (3), clickcallisr, RISING);
             click_called = false; 
         }
@@ -250,7 +257,7 @@ bool comparator_test ()
    return (false);
 }
 
-void report () // Go through the bin index to find the first true value
+void report () // Go through the bin index to find the first true value and then the next false value after that
 {
     for (bin_index = 0; bin_index < 1500; bin_index++)
     {
@@ -259,6 +266,17 @@ void report () // Go through the bin index to find the first true value
             range = bin_index;
             Serial.println("Range Detected: "); // debugging
             Serial.println(range * distance_factor); // debugging
+            for (bin_index = range; bin_index < 1500; bin_index++)
+            {
+                if (range_bin[bin_index] == false)
+                {echo_start = bin_index;
+                Serial.println("Echo Length: "); // debugging
+                echo_start - range = echo_length;
+                Serial.println(echo_length); // debugging
+                
+                }
+
+            }
         }
     }
     Serial.println("Nothing Detected!"); // debugging
