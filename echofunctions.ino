@@ -16,7 +16,7 @@ Reads a digital pin really fast to time a reflected sound wave and calculate ran
 #define PIN            6
 #define NUMPIXELS      15
 
-Adafruit_NeoPixel pixels = Adafruit_NeoPixel(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel strip = Adafruit_NeoPixel(15, PIN, NEO_GRB + NEO_KHZ800);
 
 // Function Generator
 #define FNC_PIN 4     
@@ -50,6 +50,7 @@ int digitalPotWrite(uint8_t value)
 static uint8_t wave_type[2] = {SINE_WAVE, TRIANGLE_WAVE};
 volatile uint16_t range = 0; /// output of scan
 volatile uint16_t echo_start = 0;
+volatile uint16_t echo_end = 0;
 volatile uint16_t echo_length = 0;
 // Arrays and logging
 
@@ -90,11 +91,13 @@ void setup()
     gen.Begin();  // Set AD9833
     gen.ApplySignal(SINE_WAVE,REG0,10000);
 
-    pixels.begin(); 
+    strip.begin(); 
+    strip.setBrightness(2);
+    strip.show(); // Initialize all pixels to 'off'
 
     Serial.begin(115200); // debugging
     SPI.begin(); // potentiometer
-    
+
     pinMode (CS, OUTPUT); // potentiometer
     pinMode(7, INPUT); // comparator pin
     pinMode(3, INPUT); // interrupt pin // triggers scan for testing
@@ -124,7 +127,7 @@ void loop() /*******************************************************************
         for( ; ; ) {} // infinite loop
     }
 
-    click_ready; // plays a nice wibble noise
+    click_ready; // plays a nice wibble noise and flashes leds
             
     attachInterrupt (digitalPinToInterrupt (3), clickcallisr, RISING); // interrupt for testing // isr detaches interrupt and flags click_called
 
@@ -185,16 +188,19 @@ bool self_test () // checks the mics can hear the speaker, then raises the logic
 
 void click_ready () // plays a tone to show system ok
 {
-    gen.ApplySignal(SINE_WAVE,REG0,220);
+    gen.ApplySignal(SINE_WAVE,REG0,120);
     gen.EnableOutput(true); 
+    strip.setBrightness(3);
+    rainbowCycle(15);
+    strip.show();
     while (wait(440000) == false)
     {
-        for (int i = 220; i <= 440; i + 10)
+        for (int i = 120; i <= 340; i + 10)
             {
             gen.ApplySignal(TRIANGLE_WAVE,REG0,i);
             delay(10);
             }
-        for (int i = 440; i >= 220; i - 10)
+        for (int i = 340; i >= 120; i - 10)
             {
             gen.ApplySignal(TRIANGLE_WAVE,REG0,i);
             delay(10);
@@ -242,8 +248,10 @@ bool validate_readings ()
 {
     if (check_values == 1500 || check_values == 0)
         {
+            check_values = 0;
             return false;
         }
+    check_values = 0;
     return true;
 }
 
@@ -265,33 +273,64 @@ void report () // Go through the bin index to find the first true value and then
         {
             range = bin_index;
             Serial.println("Range Detected: "); // debugging
-            Serial.println(range * distance_factor); // debugging
+            Serial.println(range); // debugging
             for (bin_index = range; bin_index < 1500; bin_index++)
             {
                 if (range_bin[bin_index] == false)
-                {echo_start = bin_index;
-                Serial.println("Echo Length: "); // debugging
-                echo_start - range = echo_length;
-                Serial.println(echo_length); // debugging
-                
+                {
+                    echo_end = bin_index;
+                    
+                    echo_length = (echo_end - range);
+
+                    Serial.println("Echo Length: "); // debugging
+                    Serial.println(echo_length); // debugging
+                    return;
                 }
 
             }
         }
     }
-    Serial.println("Nothing Detected!"); // debugging
+
+//    Serial.println("Nothing Detected!"); // debugging
+    return;
 }
+// void report () // Go through the bin index to find the first true value and then the next false value after that
+// {
+//     for (bin_index = 0; bin_index < 1500; bin_index++)
+//     {
+//         if (range_bin[bin_index] == true)
+//         {
+//             range = bin_index;
+//             Serial.println("Range Detected: "); // debugging
+//             Serial.println(range * distance_factor); // debugging
+//             for (bin_index = range; bin_index < 1500; bin_index++)
+//             {
+//                 if (range_bin[bin_index] == false)
+//                 {echo_start = bin_index;
+//                 echo_start - range = echo_length;
+
+//                 Serial.println("Echo Length: "); // debugging
+//                 Serial.println(echo_length); // debugging
+//                 return;
+//                 }
+
+//             }
+//         }
+//     }
+//     Serial.println("Nothing Detected!"); // debugging
+//     return;
+// }
 
 void act ()
 {
     uint8_t i = map(range, 0, 1499, 1, 15);
-    pixels.setPixelColor(i, pixels.Color(150,20,20));
-    pixels.show();
+    strip.setPixelColor(i, strip.Color(150,20,20));
+    strip.show();
 }
 
 void syserror ()
 {
-    while (wait(10000000) == false)
+    while (wait(1000000) == false)
     {
         gen.ApplySignal(TRIANGLE_WAVE,REG0,220);
         gen.EnableOutput(true); 
@@ -306,9 +345,21 @@ void syserror ()
             gen.ApplySignal(TRIANGLE_WAVE,REG0,i);
             delay(100000/230);
         }
-        if (wait(10000000) == true) // micros
+        if (wait(1000000) == true) // micros
         {
             gen.EnableOutput(false);// turn off the ad9833 gen
         }
     }
+}
+
+void rainbowCycle(uint8_t wait) {
+  uint16_t i, j;
+
+  for(j=0; j<256*5; j++) { // 5 cycles of all colors on wheel
+    for(i=0; i< strip.numPixels(); i++) {
+      strip.setPixelColor(i, Wheel(((i * 256 / strip.numPixels()) + j) & 255));
+    }
+    strip.show();
+    delay(wait);
+  }
 }
